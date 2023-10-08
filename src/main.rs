@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::mem;
 use std::ops::Add;
 use std::str::FromStr;
 use crate::Color::{Black, White};
@@ -18,10 +17,10 @@ fn main() {
     //let prev_move = board.do_move_unchecked(convert_pos("B2"), convert_pos("B3"), 0).expect("");
     //let prev_move = board.do_move_unchecked(convert_pos("B7"), convert_pos("B5"), 0).expect("");
     //let prev_move = board.do_move_unchecked(convert_pos("C1"), convert_pos("C5"), 0).expect("");
-    let prev_move = board.do_move_unchecked(convert_pos("E2"), convert_pos("D3"), 0).expect("");
-    let prev_move = board.do_move_unchecked(convert_pos("F2"), convert_pos("F4"), 0).expect("");
+    //let prev_move = board.do_move_unchecked(convert_pos("E2"), convert_pos("D3"), 0).expect("");
+    let prev_move = board.do_move_unchecked(convert_pos("B1"), convert_pos("D5"), 0).expect("");
     println!("{:#?}", board);
-    let legals = board.find_legal("E1".try_into().unwrap(), prev_move);
+    let legals = board.find_legal("D5".try_into().unwrap(), prev_move);
     println!("{:?}", legals);
     println!("{:?}", print_positions(legals));
 }
@@ -231,13 +230,14 @@ impl Board {
 
     fn do_move_unchecked(&mut self, before: Position, after: Position, id: u32) -> Option<Move> {
         let mut piece = self.pieces.remove(&before)?;
-        println!("{:?}", piece);
+        //println!("{:?}", piece);
+        /// change to match the whole remove thing. Returns none for both dead pieces and empty positions, good?
         match piece.state {
             Alive(pos) if pos == before => {piece.state = Alive(after)}
             PieceState::Dead => {return None}
             _ => unreachable!()
         }
-        println!("{:?}", piece);
+        //println!("{:?}", piece);
         self.pieces.insert(after, piece);
         Some(
             Move {before, after, id}
@@ -263,9 +263,9 @@ impl Board {
         possible_moves
     }
 
-    fn find_legal(&self, position: Position, prev_move: Move) -> Vec<Position> {
+    fn find_legal(&self, at_position: Position, prev_move: Move) -> Vec<Position> {
         let mut legal_pos: Vec<Position> = Vec::new();
-        let piece = match self.pieces.get(&position) {
+        let piece = match self.pieces.get(&at_position) {
             Some(i) => i,
             None => return legal_pos
         };
@@ -299,7 +299,7 @@ impl Board {
                 let take_right_vec = MoveVector {x: 1, y: dir_switch * 1};
                 let take_left_vec = MoveVector {x: -1, y: dir_switch * 1};
 
-                let en_passant_before = MoveVector {x: 0, y: dir_switch * 1};;
+                let en_passant_before = MoveVector {x: 0, y: dir_switch * 1};
                 let en_passant_after = MoveVector {x: 0, y: dir_switch * -1};
 
                 if let Some(single_move) = pos.add(single_vec) {
@@ -350,13 +350,13 @@ impl Board {
                     MoveVector { x: 2, y: -1 },
                     MoveVector { x: -2, y: -1 }
                 ].iter() {
-                    let position = if let Some(pos) = position.add(direction) { pos } else {
+                    let next_pos = if let Some(i) = pos.add(direction) { i } else {
                         continue
                     };
-                    match self.pieces.get(&position) {
-                        None => legal_pos.push(position),
+                    match self.pieces.get(&next_pos) {
+                        None => legal_pos.push(next_pos),
                         Some(other) if piece.is_enemy(other) => {
-                            legal_pos.push(position);
+                            legal_pos.push(next_pos);
                         }
                         _ => {}
                     }
