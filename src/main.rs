@@ -2,9 +2,6 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
 use std::str::FromStr;
-use crate::Color::{Black, White};
-use crate::MovedState::Still;
-use crate::PieceState::Alive;
 use crate::PieceType::{Bishop, King, Knight, Pawn, Queen, Rook};
 
 fn main() {
@@ -20,7 +17,7 @@ fn main() {
     //let prev_move = board.do_move_unchecked(convert_pos("E2"), convert_pos("D3"), 0).expect("");
     let prev_move = board.do_move_unchecked(convert_pos("B1"), convert_pos("D5"), 0).expect("");
     println!("{:#?}", board);
-    let legals = board.find_legal("D5".try_into().unwrap(), prev_move);
+    let legals = board.find_legal("D5".try_into().unwrap());
     println!("{:?}", legals);
     println!("{:?}", print_positions(legals));
 }
@@ -51,6 +48,12 @@ impl Piece {
             _ => false
         }
     }
+    fn direction(self) -> i32 {
+        match self.color {
+            Color::White => 1,
+            Color::Black => -1
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -63,6 +66,15 @@ enum PieceState {
 enum Color {
     White,
     Black
+}
+
+impl Color {
+    fn opposite(self) -> Self {
+        match self {
+            Color::White => Color::Black,
+            Color::Black => Color::White
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -182,16 +194,27 @@ impl BoundsAdd<MoveVector> for Position {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Hash)]
 struct Move {
     before: Position,
     after: Position,
+    kind: MoveType,
     id: u32,
+}
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+enum MoveType {
+    Plain,
+    Taking,
+    EnPassant,
+    Castle,
+    Unchecked
 }
 
 #[derive(Debug)]
 struct Board {
-    pieces: HashMap<Position, Piece>
+    pieces: HashMap<Position, Piece>,
+    previous_move: Option<Move>
 }
 
 impl Board {
@@ -200,32 +223,35 @@ impl Board {
         let mut pieces: HashMap<Position, Piece> = HashMap::with_capacity(32);
         for i in 0..31 {
             let color = match i {
-                0..=15 => White,
-                16..=31 => Black,
+                0..=15 => Color::White,
+                16..=31 => Color::Black,
                 _ => unreachable!()
             };
             let piece_type = match i % 16 {
-                0..=7 => Pawn(Still),
-                8 | 15 => Rook(Still),
+                0..=7 => Pawn(MovedState::Still),
+                8 | 15 => Rook(MovedState::Still),
                 9 | 14 => Knight,
                 10 | 13 => Bishop,
-                11 => King(Still),
+                11 => King(MovedState::Still),
                 12 => Queen,
                 _ => unreachable!()
             };
             let row = match (&color, &piece_type) {
-                (White, Pawn(_)) => 1,
-                (White, _) => 0,
-                (Black, Pawn(_)) => 6,
-                (Black, _) => 7
+                (Color::White, Pawn(_)) => 1,
+                (Color::White, _) => 0,
+                (Color::Black, Pawn(_)) => 6,
+                (Color::Black, _) => 7
             };
             pieces.insert(Position{x: i % 8, y: row}, Piece {
-                state: Alive(Position{x: i % 8, y: row}),
+                state: PieceState::Alive(Position{x: i % 8, y: row}),
                 piece_type,
                 color
             });
         }
-        Self {pieces}
+        Self {
+            pieces,
+            previous_move: None
+        }
     }
 
     fn do_move_unchecked(&mut self, before: Position, after: Position, id: u32) -> Option<Move> {
@@ -233,14 +259,14 @@ impl Board {
         //println!("{:?}", piece);
         /// change to match the whole remove thing. Returns none for both dead pieces and empty positions, good?
         match piece.state {
-            Alive(pos) if pos == before => {piece.state = Alive(after)}
+            PieceState::Alive(pos) if pos == before => {piece.state = PieceState::Alive(after)}
             PieceState::Dead => {return None}
             _ => unreachable!()
         }
         //println!("{:?}", piece);
         self.pieces.insert(after, piece);
         Some(
-            Move {before, after, id}
+            Move {before, after, id, kind: MoveType::Unchecked}
         )
     }
 
@@ -263,14 +289,14 @@ impl Board {
         possible_moves
     }
 
-    fn find_legal(&self, at_position: Position, prev_move: Move) -> Vec<Position> {
+    fn find_legal(&self, at_position: Position) -> Vec<Position> {
         let mut legal_pos: Vec<Position> = Vec::new();
         let piece = match self.pieces.get(&at_position) {
             Some(i) => i,
             None => return legal_pos
         };
         match piece {
-            Piece {piece_type: Rook(_), state: Alive(pos), ..} => {
+            Piece {piece_type: Rook(_), state: PieceState::Alive(pos), ..} => {
                 for &direction in [
                     MoveVector{x: 0, y: 1},
                     MoveVector{x: 1, y: 0},
@@ -280,7 +306,7 @@ impl Board {
                     legal_pos.append(&mut self.search_direction(piece, *pos, direction))
                 }
             }
-            Piece {piece_type: Bishop, state: Alive(pos), ..} => {
+            Piece {piece_type: Bishop, state: PieceState::Alive(pos), ..} => {
                 for &direction in [
                     MoveVector { x: 1, y: 1 },
                     MoveVector { x: -1, y: 1 },
@@ -290,10 +316,10 @@ impl Board {
                     legal_pos.append(&mut self.search_direction(piece, *pos,direction))
                 }
             }
-            Piece {piece_type: Pawn(moved), state: Alive(pos), color, .. } => {
+            Piece {piece_type: Pawn(moved), state: PieceState::Alive(pos), color, .. } => {
                 let dir_switch = match color {
-                    White => 1,
-                    Black => -1
+                    Color::White => 1,
+                    Color::Black => -1
                 };
                 let single_vec = MoveVector {x: 0, y: dir_switch * 1};
                 let take_right_vec = MoveVector {x: 1, y: dir_switch * 1};
@@ -324,8 +350,9 @@ impl Board {
                             Some(_) => {}
                             None => {
                                 if let (Some(enp_before), Some(enp_after)) = (take_pos.add(en_passant_before), take_pos.add(en_passant_after)) {
-                                    match &prev_move {
-                                        Move { before, after,.. } if
+                                    match &self.previous_move {
+                                        None => {}
+                                        Some(Move { before, after,.. }) if
                                         (&self.pieces[after].is_pawn())
                                         & (*before == enp_before)
                                         & (*after == enp_after) => {
@@ -339,7 +366,7 @@ impl Board {
                     }
                 }
             }
-            Piece {piece_type: Knight, state: Alive(pos), ..} => {
+            Piece {piece_type: Knight, state: PieceState::Alive(pos), ..} => {
                 for &direction in [
                     MoveVector { x: 1, y: 2 },
                     MoveVector { x: -1, y: 2 },
@@ -362,7 +389,7 @@ impl Board {
                     }
                 }
             }
-            Piece {piece_type: Queen, state: Alive(pos), ..} => {
+            Piece {piece_type: Queen, state: PieceState::Alive(pos), ..} => {
                 for direction in [
                     MoveVector{x: 0, y: 1},
                     MoveVector{x: 1, y: 0},
@@ -376,7 +403,9 @@ impl Board {
                     legal_pos.append(&mut self.search_direction(piece, *pos,*direction))
                 }
             }
-            Piece {piece_type: King(moved), ..} => {todo!() }
+            Piece {piece_type: King(moved), state: PieceState::Alive(pos),..} => {
+                todo!()
+            }
             Piece{state: PieceState::Dead, ..} => unreachable!("dead piece")
         }
         legal_pos
