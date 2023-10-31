@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
 use std::str::FromStr;
-use crate::MoveType::Castle;
 use crate::PieceType::{Bishop, King, Knight, Pawn, Queen, Rook};
 
 macro_rules! add_move {
@@ -302,25 +301,38 @@ impl Board {
 
     fn get_checked(&self, color: Color) -> HashSet<Position> {
         let mut checked: HashSet<Position> = HashSet::with_capacity(32);
-        for (position, piece) in self.pieces.into_iter() {
-            if piece.color == color {
-                checked.extend(self.find_legal(&piece))
+        for piece in self.pieces.values().into_iter() {
+            if piece.color.opposite() == color {
+                checked.extend(self.find_legal(&piece).iter().map(|&x: &Move| x.after ))
             }
         };
         checked
     }
 
-    fn find_possible_moves(&self, piece: Piece) {
-        let mut legal = self.find_legal(&piece);
-        match piece.piece_type {
-            PieceType::King(moved_state) => {
-                legal.iter().intersection(self.get_checked(piece.color))
+    fn find_possible_moves(&self, piece: Piece) -> HashSet<Move> {
+        let mut possible_moves: HashSet<Move> = self.find_legal(&piece);
+        match piece {
+            Piece { state: PieceState::Alive(pos), piece_type: PieceType::King( moved_state), ..} => {
+                let checked = self.get_checked(piece.color);
+                for legal_move in possible_moves.clone() {
+                    if checked.contains(&legal_move.after) {
+                        possible_moves.remove(&legal_move);
+                    }
+                }
+                if moved_state == MovedState::Still {
+                    {
+                        if let Some(i) = self.make_small_castle(pos, &checked) {possible_moves.insert(i);}
+                        if let Some(i) = self.make_big_castle(  pos, &checked) {possible_moves.insert(i);}
+                    }
+                }
             }
-        }
+            _ => {}
+        };
+        possible_moves
     }
 
     fn find_legal(&self, piece: &Piece) -> HashSet<Move> { // TODO have initial_piece argument
-        let mut legal_pos: HashSet<Move> = HashSet::with_capacity(16); // usually no more than 16 moves available for piece
+        let mut legal_moves: HashSet<Move> = HashSet::with_capacity(16); // usually no more than 16 moves available for piece
 /*        let piece = match self.pieces.get(&at_position) {
             Some(i) => i,
             None => return legal_pos
@@ -333,7 +345,7 @@ impl Board {
                     MoveVector{x: -1, y: 0},
                     MoveVector{x: 0, y: -1}
                 ].iter() {
-                    legal_pos.extend(self.search_direction(piece, *pos, direction).into_iter())
+                    legal_moves.extend(self.search_direction(piece, *pos, direction).into_iter())
                 }
             }
             Piece {piece_type: Bishop, state: PieceState::Alive(pos), ..} => {
@@ -343,7 +355,7 @@ impl Board {
                     MoveVector { x: 1, y: -1 },
                     MoveVector { x: -1, y: -1 }
                 ].iter() {
-                    legal_pos.extend(self.search_direction(piece, *pos,direction).into_iter())
+                    legal_moves.extend(self.search_direction(piece, *pos, direction).into_iter())
                 }
             }
             Piece {piece_type: Pawn(moved), state: PieceState::Alive(pos), color, .. } => {
@@ -362,11 +374,11 @@ impl Board {
                     match self.pieces.get(&single_move) {
                         Some(_) => {}
                         None => {
-                            add_move!(legal_pos, *pos, single_move, MoveType::Plain);
+                            add_move!(legal_moves, *pos, single_move, MoveType::Plain);
                             if let Some(double_move) = single_move.add(single_vec) {
                                 match self.pieces.get(&double_move) {
                                     Some(_) => {}
-                                    None if *moved == MovedState::Still => { add_move!(legal_pos, *pos, double_move, MoveType::Plain);}
+                                    None if *moved == MovedState::Still => { add_move!(legal_moves, *pos, double_move, MoveType::Plain);}
                                     None => {}
                                 };
                             }
@@ -376,7 +388,7 @@ impl Board {
                 for &take_vec in [take_right_vec, take_left_vec].iter() {
                     if let Some(take_pos) = pos.add(take_vec) {
                         match self.pieces.get(&take_pos) {
-                            Some(other) if piece.is_enemy(other) => { add_move!(legal_pos, *pos, take_pos, MoveType::Taking);},
+                            Some(other) if piece.is_enemy(other) => { add_move!(legal_moves, *pos, take_pos, MoveType::Taking);},
                             Some(_) => {}
                             None => {
                                 if let (Some(enp_before), Some(enp_after)) = (take_pos.add(en_passant_before), take_pos.add(en_passant_after)) {
@@ -386,7 +398,7 @@ impl Board {
                                         (&self.pieces[after].is_pawn())
                                         & (*before == enp_before)
                                         & (*after == enp_after) => {
-                                            { add_move!(legal_pos, *pos, take_pos, MoveType::EnPassant);}
+                                            { add_move!(legal_moves, *pos, take_pos, MoveType::EnPassant);}
                                         }
                                         _ => {}
                                     }
@@ -411,9 +423,9 @@ impl Board {
                         continue
                     };
                     match self.pieces.get(&next_pos) {
-                        None => { add_move!(legal_pos, *pos, next_pos, MoveType::Plain);},
+                        None => { add_move!(legal_moves, *pos, next_pos, MoveType::Plain);},
                         Some(other) if piece.is_enemy(other) => {
-                            add_move!(legal_pos, *pos, next_pos, MoveType::Taking);
+                            add_move!(legal_moves, *pos, next_pos, MoveType::Taking);
                         }
                         _ => {}
                     }
@@ -430,11 +442,10 @@ impl Board {
                     MoveVector { x: 1, y: -1 },
                     MoveVector { x: -1, y: -1 }
                 ].iter() {
-                    legal_pos.extend(self.search_direction(piece, *pos,direction).into_iter())
+                    legal_moves.extend(self.search_direction(piece, *pos, direction).into_iter())
                 }
             }
-            Piece {piece_type: King(moved_state), state: PieceState::Alive(pos),..} => {
-                let mut possible_wo_attack: HashSet<Position> = HashSet::with_capacity(10);
+            Piece {piece_type: King(_), state: PieceState::Alive(pos),..} => {
                 for &direction in [
                     MoveVector { x: 0, y: 1 },
                     MoveVector { x: 1, y: 0 },
@@ -449,73 +460,58 @@ impl Board {
                         continue
                     };
                     match self.pieces.get(&next_pos) {
-                        None => { possible_wo_attack.insert(n) }, //add_move!(possible_wo_attack, *pos, next_pos, MoveType::Plain);
+                        None => { add_move!(legal_moves, *pos, next_pos, MoveType::Plain); }, //add_move!(possible_wo_attack, *pos, next_pos, MoveType::Plain);
                         Some(other) if piece.is_enemy(other) => {
-                            add_move!(possible_wo_attack, *pos, next_pos, MoveType::Taking);
+                            add_move!(legal_moves, *pos, next_pos, MoveType::Taking);
                         }
                         _ => {}
                     }
-
                 }
-                if moved_state == &MovedState::Still {
-                    {
-                        match self.make_small_castle(*pos) {
-                            Some(i) => { possible_wo_attack.insert(i); }
-                            None => {}
-                        }
-                        match self.make_big_castle(*pos) {
-                            Some(i) => { possible_wo_attack.insert(i); }
-                            None => {}
-                        }
-                    }
-                }
-
             }
             Piece{state: PieceState::Dead, ..} => unreachable!("dead piece")
         }
-        legal_pos
+        legal_moves
     }
 
-    fn make_small_castle(&self, king_pos: Position) -> Option<Move> {
-        let r_rook = self.pieces.get(
-            &king_pos.add(MoveVector { x: 3, y: 0 })
-                .expect("King did not move so small castle rook position should be valid")
-        )?;
-        let r_knight = self.pieces.get(
-            &king_pos.add(MoveVector { x: 2, y: 0 })
-                .expect("King did not move so small castle knight position should be valid")
-        );
-        let r_bishop = self.pieces.get(
-            &king_pos.add(MoveVector { x: 1, y: 0 })
-                .expect("King did not move so small castle bishop position should be valid")
-        );
-        match (r_rook, r_knight, r_bishop) {
+    fn make_small_castle(&self, king_pos: Position, checked: &HashSet<Position>) -> Option<Move> {
+        let r_rook = king_pos.add(MoveVector { x: 3, y: 0 })
+                .expect("King did not move so small castle rook position should be valid");
+        let r_knight = king_pos.add(MoveVector { x: 2, y: 0 })
+                .expect("King did not move so small castle knight position should be valid");
+        let r_bishop = king_pos.add(MoveVector { x: 1, y: 0 })
+                .expect("King did not move so small castle bishop position should be valid");
+        if [king_pos, r_rook, r_knight, r_bishop].into_iter().collect::<HashSet<_>>().intersection(checked).count() == 0 {
+            return None
+        }
+        match (
+            self.pieces.get(&r_rook)?,
+            self.pieces.get(&r_knight),
+            self.pieces.get(&r_bishop)) {
             (&Piece {piece_type: Rook(MovedState::Still), state: PieceState::Alive(rook_pos), ..}, None, None) => {
-                Some(Move {before: king_pos, after: king_pos.add(MoveVector { x: 2, y: 0 }).unwrap(), kind: Castle})
+                Some(Move {before: king_pos, after: king_pos.add(MoveVector { x: 2, y: 0 }).unwrap(), kind: MoveType::Castle})
             }
             _ => None
         }
     }
-    fn make_big_castle(&self, king_pos: Position) -> Option<Move> {
-        let l_rook = self.pieces.get(
-            &king_pos.add(MoveVector { x: -4, y: 0 })
-                .expect("King did not move so big castle rook position should be valid")
-        )?;
-        let l_knight = self.pieces.get(
-            &king_pos.add(MoveVector { x: -3, y: 0 })
-                .expect("King did not move so big castle knight position should be valid")
-        );
-        let l_bishop = self.pieces.get(
-            &king_pos.add(MoveVector { x: -2, y: 0 })
-                .expect("King did not move so big castle bishop position should be valid")
-        );
-        let queen = self.pieces.get(
-            &king_pos.add(MoveVector { x: -1, y: 0 })
-                .expect("King did not move so big castle queen position should be valid")
-        );
-        match (l_rook, l_knight, l_bishop, queen) {
+    fn make_big_castle(&self, king_pos: Position, checked: &HashSet<Position>) -> Option<Move> {
+        let l_rook = king_pos.add(MoveVector { x: -4, y: 0 })
+                .expect("King did not move so big castle rook position should be valid");
+        let l_knight = king_pos.add(MoveVector { x: -3, y: 0 })
+                .expect("King did not move so big castle knight position should be valid");
+        let l_bishop = king_pos.add(MoveVector { x: -2, y: 0 })
+                .expect("King did not move so big castle bishop position should be valid");
+        let queen = king_pos.add(MoveVector { x: -1, y: 0 })
+                .expect("King did not move so big castle queen position should be valid");
+        if [king_pos, l_rook, l_knight, l_bishop, queen].into_iter().collect::<HashSet<_>>().intersection(checked).count() == 0 {
+            return None
+        }
+        match (
+            self.pieces.get(&l_rook)?,
+            self.pieces.get(&l_knight),
+            self.pieces.get(&l_bishop),
+            self.pieces.get(&queen)) {
             (&Piece {piece_type: Rook(MovedState::Still), state: PieceState::Alive(rook_pos), ..}, None, None, None) => {
-                Some(Move {before: king_pos, after: king_pos.add(MoveVector { x: 2, y: 0 }).unwrap(), kind: Castle})
+                Some(Move {before: king_pos, after: king_pos.add(MoveVector { x: 2, y: 0 }).unwrap(), kind: MoveType::Castle})
             }
             _ => None
         }
