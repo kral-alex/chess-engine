@@ -345,7 +345,7 @@ impl Board {
                             if let Some(double_move) = single_move.add(single_vec) {
                                 match self.pieces.get(&double_move) {
                                     Some(_) => {}
-                                    None if *moved == MovedState::Still => {add_move!(legal_pos, *pos, double_move, MoveType::Plain);}
+                                    None if *moved == MovedState::Still => { add_move!(legal_pos, *pos, double_move, MoveType::Plain);}
                                     None => {}
                                 };
                             }
@@ -355,7 +355,7 @@ impl Board {
                 for &take_vec in [take_right_vec, take_left_vec].iter() {
                     if let Some(take_pos) = pos.add(take_vec) {
                         match self.pieces.get(&take_pos) {
-                            Some(other) if piece.is_enemy(other) => {add_move!(legal_pos, *pos, take_pos, MoveType::Taking);},
+                            Some(other) if piece.is_enemy(other) => { add_move!(legal_pos, *pos, take_pos, MoveType::Taking);},
                             Some(_) => {}
                             None => {
                                 if let (Some(enp_before), Some(enp_after)) = (take_pos.add(en_passant_before), take_pos.add(en_passant_after)) {
@@ -365,7 +365,7 @@ impl Board {
                                         (&self.pieces[after].is_pawn())
                                         & (*before == enp_before)
                                         & (*after == enp_after) => {
-                                            {add_move!(legal_pos, *pos, take_pos, MoveType::EnPassant);}
+                                            { add_move!(legal_pos, *pos, take_pos, MoveType::EnPassant);}
                                         }
                                         _ => {}
                                     }
@@ -390,7 +390,7 @@ impl Board {
                         continue
                     };
                     match self.pieces.get(&next_pos) {
-                        None => {add_move!(legal_pos, *pos, next_pos, MoveType::Plain);},
+                        None => { add_move!(legal_pos, *pos, next_pos, MoveType::Plain);},
                         Some(other) if piece.is_enemy(other) => {
                             add_move!(legal_pos, *pos, next_pos, MoveType::Taking);
                         }
@@ -413,7 +413,7 @@ impl Board {
                 }
             }
             Piece {piece_type: King(moved_state), state: PieceState::Alive(pos),..} => {
-                let mut possible_wo_attack: HashSet<Move> = HashSet::with_capacity(8);
+                let mut possible_wo_attack: HashSet<Move> = HashSet::with_capacity(10);
                 for &direction in [
                     MoveVector { x: 0, y: 1 },
                     MoveVector { x: 1, y: 0 },
@@ -436,44 +436,67 @@ impl Board {
                     }
                 }
                 if moved_state == &MovedState::Still {
-                    { // small castle
+                    {
                         match self.make_small_castle(*pos) {
-                            Some(i) => { legal_pos.insert(i); }
+                            Some(i) => { possible_wo_attack.insert(i); }
                             None => {}
                         }
-                    match self.make_big_castle(*pos) {
-                            Some(i) => { legal_pos.insert(i); }
+                        match self.make_big_castle(*pos) {
+                            Some(i) => { possible_wo_attack.insert(i); }
                             None => {}
                         }
                     }
                 }
+
             }
             Piece{state: PieceState::Dead, ..} => unreachable!("dead piece")
         }
         legal_pos
     }
 
-    fn make_small_castle(self, king_pos: Position) -> Option<Move> {
+    fn make_small_castle(&self, king_pos: Position) -> Option<Move> {
         let r_rook = self.pieces.get(
             &king_pos.add(MoveVector { x: 3, y: 0 })
                 .expect("King did not move so small castle rook position should be valid")
         )?;
-        let r_bishop = self.pieces.get(
-            &king_pos.add(MoveVector { x: 2, y: 0 })
-                .expect("King did not move so small castle bishop position should be valid")
-        );
         let r_knight = self.pieces.get(
-            &king_pos.add(MoveVector { x: 1, y: 0 })
+            &king_pos.add(MoveVector { x: 2, y: 0 })
                 .expect("King did not move so small castle knight position should be valid")
         );
-        match (r_rook, r_bishop, r_knight) {
+        let r_bishop = self.pieces.get(
+            &king_pos.add(MoveVector { x: 1, y: 0 })
+                .expect("King did not move so small castle bishop position should be valid")
+        );
+        match (r_rook, r_knight, r_bishop) {
             (&Piece {piece_type: Rook(MovedState::Still), state: PieceState::Alive(rook_pos), ..}, None, None) => {
-                Some(Move {before: king_pos, after: rook_pos, kind: Castle})
+                Some(Move {before: king_pos, after: king_pos.add(MoveVector { x: 2, y: 0 }).unwrap(), kind: Castle})
             }
             _ => None
-
         }
-
+    }
+    fn make_big_castle(&self, king_pos: Position) -> Option<Move> {
+        let l_rook = self.pieces.get(
+            &king_pos.add(MoveVector { x: -4, y: 0 })
+                .expect("King did not move so big castle rook position should be valid")
+        )?;
+        let l_knight = self.pieces.get(
+            &king_pos.add(MoveVector { x: -3, y: 0 })
+                .expect("King did not move so big castle knight position should be valid")
+        );
+        let l_bishop = self.pieces.get(
+            &king_pos.add(MoveVector { x: -2, y: 0 })
+                .expect("King did not move so big castle bishop position should be valid")
+        );
+        let queen = self.pieces.get(
+            &king_pos.add(MoveVector { x: -1, y: 0 })
+                .expect("King did not move so big castle queen position should be valid")
+        );
+        match (l_rook, l_knight, l_bishop, queen) {
+            (&Piece {piece_type: Rook(MovedState::Still), state: PieceState::Alive(rook_pos), ..}, None, None, None) => {
+                Some(Move {before: king_pos, after: king_pos.add(MoveVector { x: 2, y: 0 }).unwrap(), kind: Castle})
+            }
+            _ => None
+        }
     }
 }
 
