@@ -26,7 +26,9 @@ fn main() {
     //let prev_move = board.do_move_unchecked(convert_pos("E2"), convert_pos("D3")).expect("");
     //let prev_move = board.do_move_unchecked(convert_pos("B1"), convert_pos("D5")).expect("");
     println!("{:#?}", board);
-    let legals = board.find_legal("B4".try_into().unwrap());
+    let legals = board.find_legal( board.pieces.get(
+        &convert_pos("B4"))
+        .unwrap());
     println!("{:?}", legals);
     println!("{:?}", print_moves(legals));
 }
@@ -298,12 +300,31 @@ impl Board {
         possible_moves
     }
 
-    fn find_legal(&self, at_position: Position) -> HashSet<Move> { // TODO have initial_piece argument
-        let mut legal_pos: HashSet<Move> = HashSet::with_capacity(8); // usually about 8 moves available for piece
-        let piece = match self.pieces.get(&at_position) {
+    fn get_checked(&self, color: Color) -> HashSet<Position> {
+        let mut checked: HashSet<Position> = HashSet::with_capacity(32);
+        for (position, piece) in self.pieces.into_iter() {
+            if piece.color == color {
+                checked.extend(self.find_legal(&piece))
+            }
+        };
+        checked
+    }
+
+    fn find_possible_moves(&self, piece: Piece) {
+        let mut legal = self.find_legal(&piece);
+        match piece.piece_type {
+            PieceType::King(moved_state) => {
+                legal.iter().intersection(self.get_checked(piece.color))
+            }
+        }
+    }
+
+    fn find_legal(&self, piece: &Piece) -> HashSet<Move> { // TODO have initial_piece argument
+        let mut legal_pos: HashSet<Move> = HashSet::with_capacity(16); // usually no more than 16 moves available for piece
+/*        let piece = match self.pieces.get(&at_position) {
             Some(i) => i,
             None => return legal_pos
-        };
+        };*/
         match piece {
             Piece {piece_type: Rook(_), state: PieceState::Alive(pos), ..} => {
                 for &direction in [
@@ -413,7 +434,7 @@ impl Board {
                 }
             }
             Piece {piece_type: King(moved_state), state: PieceState::Alive(pos),..} => {
-                let mut possible_wo_attack: HashSet<Move> = HashSet::with_capacity(10);
+                let mut possible_wo_attack: HashSet<Position> = HashSet::with_capacity(10);
                 for &direction in [
                     MoveVector { x: 0, y: 1 },
                     MoveVector { x: 1, y: 0 },
@@ -428,12 +449,13 @@ impl Board {
                         continue
                     };
                     match self.pieces.get(&next_pos) {
-                        None => { add_move!(possible_wo_attack, *pos, next_pos, MoveType::Plain); },
+                        None => { possible_wo_attack.insert(n) }, //add_move!(possible_wo_attack, *pos, next_pos, MoveType::Plain);
                         Some(other) if piece.is_enemy(other) => {
                             add_move!(possible_wo_attack, *pos, next_pos, MoveType::Taking);
                         }
                         _ => {}
                     }
+
                 }
                 if moved_state == &MovedState::Still {
                     {
