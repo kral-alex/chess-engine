@@ -1,7 +1,8 @@
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
+use std::panic::panic_any;
 use std::str::FromStr;
 
 use crate::PieceType::{Bishop, King, Knight, Pawn, Queen, Rook};
@@ -38,6 +39,23 @@ impl Piece {
         match self.piece_type {
             Pawn{ moved: _ } => true,
             _ => false
+        }
+    }
+
+    fn kill(&mut self) {
+        self.state = PieceState::Dead;
+    }
+
+    fn be_moved(&mut self, new_pos: Position) {
+        match self.state {
+            PieceState::Dead => panic!("Cannot move dead piece"),
+            PieceState::Alive(ref mut own_pos) => { *own_pos = new_pos }
+        }
+        match self.piece_type {
+            PieceType::Pawn {ref mut moved}
+            | PieceType::King {ref mut moved}
+            | PieceType::Rook {ref mut moved} => { *moved = true },
+            _ => {}
         }
     }
     /*fn direction(self) -> i32 {
@@ -207,9 +225,10 @@ enum MoveType {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 enum NonCheckingMove {
+    EnPassant,
     PawnPush,
-    Castle,
-    EnPassant
+    SmallCastle,
+    BigCastle
 }
 
 impl MoveType {
@@ -229,10 +248,6 @@ impl MoveType {
     }
 }
 
-struct Board {
-    pieces: [[Option<Piece>; 8]; 8],
-}
-
 trait BoardOps {
     fn get(&self, pos: &Position) -> Option<&Piece>;
     fn remove(&mut self, pos: &Position) -> Option<Piece>;
@@ -240,26 +255,32 @@ trait BoardOps {
     fn move_to(&mut self, before: Position, after: Position) -> Option<Piece>;
     }
 
-impl BoardOps for [[Option<Piece>; 8]; 8] {
+#[derive(Debug, Default)]
+struct Board {
+    arr: [[Option<Piece>; 8]; 8]
+}
+
+impl BoardOps for Board {
     fn get(&self, pos: &Position) -> Option<&Piece> {
-        self[pos.x as usize][pos.y as usize].as_ref()
+        self.arr[pos.x as usize][pos.y as usize].as_ref()
     }
 
     fn remove(&mut self, pos: &Position) -> Option<Piece> {
-        self[pos.x as usize][pos.y as usize].take()
+        self.arr[pos.x as usize][pos.y as usize].take()
     }
 
     fn insert(&mut self, pos: Position, piece: Piece) -> Option<Piece> {
-        self[pos.x as usize][pos.y as usize].replace(piece)
+        self.arr[pos.x as usize][pos.y as usize].replace(piece)
     }
 
     fn move_to(&mut self, before: Position, after: Position) -> Option<Piece> {
         let killed = self.remove(&after);
-        self.insert(after, self[before.x as usize][before.y as usize].expect("before position argument has to have a piece"));
-        self[before.x as usize][before.y as usize] = None;
+        let mut moving = self.remove(&before).expect("before position argument has to have a piece");
+        moving.be_moved(after);
+        self.insert(after, moving);
         match killed {
             Some(mut piece) => {
-                piece.state = PieceState::Dead;
+                piece.kill();
                 Some(piece)
             }
             None => None
@@ -267,39 +288,25 @@ impl BoardOps for [[Option<Piece>; 8]; 8] {
     }
 }
 
-impl Board {
+impl<'a> IntoIterator for &'a Board {
+    type Item = &'a Piece;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
 
-    fn get(&self, pos: &Position) -> Option<&Piece> {
-        match &self.pieces[pos.x as usize][pos.y as usize] {
-            Some(piece) => Some(piece),
-            None => None
-        }
-    }
-
-    fn remove(&mut self, pos: &Position) -> Option<Piece> {
-       self.pieces[pos.x as usize][pos.y as usize].take()
-    }
-
-    fn insert(&mut self, pos: Position, piece: Piece) -> () {
-        self.pieces[pos.x as usize][pos.y as usize] = Some(piece)
-    }
-
-    fn move_to(&mut self, before: Position, after: Position) -> Option<Piece> {
-        let killed = self.remove(&after);
-        self.insert(after, self.pieces[before.x as usize][before.y as usize].expect("before position argument has to have a piece"));
-        self.pieces[before.x as usize][before.y as usize] = None;
-        match killed {
-            Some(mut piece) => {
-                piece.state = PieceState::Dead; Some(piece)
-            }
-            None => None
-        }
+    fn into_iter(self) -> Self::IntoIter {
+        self.arr
+            .as_slice()
+            .iter()
+            .flatten()
+            .filter(|x| x.is_some())
+            .map(|x| x.as_ref().unwrap())
+            .collect::<Vec<Self::Item>>()
+            .into_iter()
     }
 }
 
 #[derive(Debug)]
 pub struct Game {
-    pub pieces: HashMap<Position, Piece>,
+    pieces: Board,
     previous_move: Option<Move>
 }
 
@@ -308,7 +315,7 @@ pub struct IllegalMoveError;
 impl Game {
 
     pub fn set_up() -> Self {
-        let mut pieces: HashMap<Position, Piece> = HashMap::with_capacity(32);
+        let mut pieces: Board = Default::default();
         for i in 0..=31 {
             let color = match i {
                 0..=15 => Color::White,
@@ -330,7 +337,7 @@ impl Game {
                 (Color::Black, Pawn { moved: _ }) => 6,
                 (Color::Black, _) => 7
             };
-            pieces.insert(Position{x: i % 8, y: row},Piece {
+            pieces.insert(Position{x: i % 8, y: row}, Piece {
                 state: PieceState::Alive(Position{x: i % 8, y: row}),
                 piece_type,
                 color
@@ -362,7 +369,7 @@ impl Game {
             None => Err(IllegalMoveError),
             Some(possible_move) if !possible_move.move_type.is_available() => Err(IllegalMoveError),
             Some(possible_move) => {
-                match self.make_move_w_move(possible_move) {
+                match self.make_move_w_piece(possible_move) {
                     Ok(m) => { self.previous_move = Some(*possible_move); Ok(m) }
                     Err(err) => Err(err)
                 }
@@ -370,52 +377,56 @@ impl Game {
         }
     }
 
-    fn make_move_w_move(&mut self, m: &Move) -> Result<Move, IllegalMoveError> {
+    fn make_move_w_piece(&mut self, m: &Move) -> Result<Move, IllegalMoveError> {
         match self.pieces.remove(&m.pos.0) {
-            None => Err(IllegalMoveError),
+            None => panic!("Should not receive move from empty position"),
             Some(mut piece) => {
                 match m.move_type {
                     MoveType::Checking { unobstructed: false } => return Err(IllegalMoveError),
-                    MoveType::NonChecking(NonCheckingMove::PawnPush) => {
-                        piece.state = PieceState::Alive(m.pos.1);
-                        if let PieceType::Pawn {ref mut moved} = piece.piece_type { *moved = true } else { unreachable!() }
-                        self.pieces.insert(m.pos.1, piece);
+                    MoveType::Checking { unobstructed: true } => {
+                        if let Some(mut killed) = self.pieces.remove(&m.pos.1) { killed.kill() }
                     }
-                    MoveType::NonChecking(NonCheckingMove::Castle) => {
-                        todo!()
-                    }
+                    MoveType::NonChecking(NonCheckingMove::PawnPush) => {}
                     MoveType::NonChecking(NonCheckingMove::EnPassant) => {
-                        piece.state = PieceState::Alive(m.pos.1);
-                        if let PieceType::Pawn {ref mut moved} = piece.piece_type { *moved = true } else { unreachable!() }
                         self.pieces.remove(&m.pos.1
                             .add(MoveVector{x: 0, y: piece.color.direction()})
-                            .expect("En Passamt was already checked")
+                            .expect("En Passant was already confirmed. Target square must be in bounds.")
                         )
-                            .expect("Has to exist")
-                            .state = PieceState::Dead;
-                        self.pieces.insert(m.pos.1, piece);
+                            .expect("En Passant was already confirmed. Target piece has to exist.")
+                            .kill();
                     }
-                    MoveType::Checking { unobstructed: true } => {
-                        piece.state = PieceState::Alive(m.pos.1);
-                        if let PieceType::Pawn {ref mut moved}
-                        | PieceType::King {ref mut moved}
-                        | PieceType::Rook {ref mut moved}
-                            = piece.piece_type {
-                            *moved = true
-                        }
-                        if let Some(mut killed) = self.pieces.remove(&m.pos.1) { killed.state = PieceState::Dead }
-                        self.pieces.insert(m.pos.1, piece);
+                    MoveType::NonChecking(NonCheckingMove::SmallCastle) => {
+                        let mut r_rook = self.pieces
+                            .remove(
+                                &m.pos.0
+                                .add(MoveVector { x: 3, y: 0 })
+                                .expect("")
+                            ).expect("");
+                        let r_rook_new_pos = m.pos.1.add(MoveVector { x: -1, y: 0 }).expect("");
+                        r_rook.be_moved(r_rook_new_pos);
+                        self.pieces.insert(r_rook_new_pos, r_rook);
+                    }
+                    MoveType::NonChecking(NonCheckingMove::BigCastle) => {
+                        let mut l_rook = self.pieces.remove(
+                            &m.pos.0
+                            .add(MoveVector { x: -4, y: 0 })
+                            .expect("")
+                        ).expect("");
+                        let l_rook_new_pos = m.pos.1.add(MoveVector { x: 1, y: 0 }).expect("");
+                        l_rook.be_moved(l_rook_new_pos);
+                        self.pieces.insert(l_rook_new_pos, l_rook);
                     }
                 };
+                piece.be_moved(m.pos.1);
+                self.pieces.insert(m.pos.1, piece);
                 Ok(*m)
             }
         }
-
     }
 
     pub fn get_checked(&self, color: Color) -> HashSet<Position> {
         let mut checked: HashSet<Position> = HashSet::with_capacity(32);
-        for piece in self.pieces.values().into_iter() {
+        for piece in self.pieces.into_iter() {
             if piece.color.opposite() == color {
                 checked.extend(self.find_legal(&piece).iter().filter(
                     |&x| x.move_type.is_checking()
@@ -507,7 +518,7 @@ impl Game {
                                     match &self.previous_move {
                                         None => {}
                                         Some(Move { pos: (before, after), .. }) if
-                                        (&self.pieces[after].is_pawn())
+                                        &self.pieces.get(after).unwrap().is_pawn()
                                             & (*before == enp_before)
                                             & (*after == enp_after) => {
                                             { add_move!(legal_moves, *pos, take_pos, MoveType::NonChecking(NonCheckingMove::EnPassant));}
@@ -608,7 +619,7 @@ impl Game {
             self.pieces.get(&r_knight),
             self.pieces.get(&r_bishop)) {
             (&Piece {piece_type: Rook { moved: false }, state: PieceState::Alive(_), ..}, None, None) => {
-                Some(Move {pos: (king_pos, king_pos.add(MoveVector { x: 2, y: 0 }).unwrap()), move_type: MoveType::NonChecking(NonCheckingMove::Castle)})
+                Some(Move {pos: (king_pos, king_pos.add(MoveVector { x: 2, y: 0 }).unwrap()), move_type: MoveType::NonChecking(NonCheckingMove::SmallCastle)})
             }
             _ => None
         }
@@ -642,7 +653,7 @@ impl Game {
             self.pieces.get(&l_bishop),
             self.pieces.get(&queen)) {
             (&Piece {piece_type: Rook { moved: false }, state: PieceState::Alive(_), ..}, None, None, None) => {
-                Some(Move {pos: (king_pos, king_pos.add(MoveVector { x: -2, y: 0 }).unwrap()), move_type: MoveType::NonChecking(NonCheckingMove::Castle)})
+                Some(Move {pos: (king_pos, king_pos.add(MoveVector { x: -2, y: 0 }).unwrap()), move_type: MoveType::NonChecking(NonCheckingMove::BigCastle)})
             }
             _ => None
         }
@@ -758,7 +769,7 @@ mod tests {
         println!("{:}", print_moves(res.clone()));
         println!("{:#?}", res.clone());
         assert!(res.contains(&Move { pos: (king_pos, Position { x: 5, y: 0 }), move_type: MoveType::Checking { unobstructed: true} }));
-        assert!(res.contains(&Move { pos: (king_pos, Position { x: 6, y: 0 }), move_type: MoveType::NonChecking(NonCheckingMove::Castle) }));
+        assert!(res.contains(&Move { pos: (king_pos, Position { x: 6, y: 0 }), move_type: MoveType::NonChecking(NonCheckingMove::SmallCastle) }));
     }
 
     #[test]
@@ -772,7 +783,7 @@ mod tests {
         println!("{:}", print_moves(res.clone()));
         println!("{:#?}", res.clone());
         assert!(res.contains(&Move {pos: (king_pos, Position {x: 5, y: 7}), move_type: MoveType::Checking { unobstructed: true }}));
-        assert!(res.contains(&Move {pos: (king_pos, Position {x: 6, y: 7}), move_type: MoveType::NonChecking(NonCheckingMove::Castle)}))
+        assert!(res.contains(&Move {pos: (king_pos, Position {x: 6, y: 7}), move_type: MoveType::NonChecking(NonCheckingMove::SmallCastle)}))
     }
 
     #[test]
@@ -786,7 +797,7 @@ mod tests {
         println!("{:}", print_moves(res.clone()));
         println!("{:#?}", res.clone());
         assert!(res.contains(&Move { pos: (king_pos, Position { x: 3, y: 0 }), move_type: MoveType::Checking { unobstructed: true } }));
-        assert!(res.contains(&Move { pos: (king_pos, Position { x: 2, y: 0 }), move_type: MoveType::NonChecking(NonCheckingMove::Castle) }));
+        assert!(res.contains(&Move { pos: (king_pos, Position { x: 2, y: 0 }), move_type: MoveType::NonChecking(NonCheckingMove::BigCastle) }));
     }
 
     #[test]
@@ -801,7 +812,7 @@ mod tests {
         println!("{:}", print_moves(res.clone()));
         println!("{:#?}", res.clone());
         assert!(res.contains(&Move {pos: (king_pos, Position { x: 3, y: 7 }), move_type: MoveType::Checking { unobstructed: true}}));
-        assert!(res.contains(&Move {pos: (king_pos, Position { x: 2, y: 7 }), move_type: MoveType::NonChecking(NonCheckingMove::Castle)}))
+        assert!(res.contains(&Move {pos: (king_pos, Position { x: 2, y: 7 }), move_type: MoveType::NonChecking(NonCheckingMove::BigCastle)}))
     }
 
     #[test]
