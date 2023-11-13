@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::HashSet;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Add;
 use std::str::FromStr;
 
@@ -25,6 +25,16 @@ pub struct Piece {
     piece_type: PieceType,
     color: Color,
     position: Position
+}
+
+impl Display for Piece {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+                Self {piece_type, color: Color::White, ..} => format!("{}", piece_type).to_ascii_uppercase(),
+                Self {piece_type, color: Color::Black, ..} => format!("{}", piece_type).to_ascii_lowercase()
+            }
+        )
+    }
 }
 
 impl Piece {
@@ -54,7 +64,7 @@ pub enum Color {
 }
 
 impl Color {
-    fn opposite(self) -> Self {
+    pub fn opposite(self) -> Self {
         match self {
             Color::White => Color::Black,
             Color::Black => Color::White
@@ -86,6 +96,19 @@ pub enum PieceType {
     Bishop,
     Queen,
     King{moved: bool}
+}
+
+impl Display for PieceType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            Self::Pawn { .. } => "P",
+            Self::Rook { .. } => "R",
+            Self::Knight => "N",
+            Self::Bishop => "B",
+            Self::Queen => "Q",
+            Self::King { .. } => "K"
+        })
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -201,7 +224,16 @@ impl Borrow<(Position, Position)> for Move {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+impl Display for Move {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}->{}: {}", self.pos.0, self.pos.1, match self.move_type {
+            MoveType::NonChecking(non_checking_type) => format!("{:?}", non_checking_type),
+            MoveType::Checking {..} => format!("Normal")
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, )]
 enum MoveType {
     NonChecking(NonCheckingMove),
     Checking{ allowed: bool }, // an empty square or enemy piece
@@ -216,26 +248,32 @@ enum NonCheckingMove {
     BigCastle
 }
 
-impl MoveType {
+impl Move {
+    pub fn is_promotion(self) -> bool {
+        matches!(self.move_type, MoveType::NonChecking(NonCheckingMove::Promotion))
+    }
+
     fn is_available(self) -> bool {
-        match self {
-            Self::NonChecking(_) => true,
-            //Self::EnPassant => true,
-            Self::Checking { allowed: true} => true,
-            Self::Checking { allowed: false} => false
+        match self.move_type {
+            MoveType::NonChecking(_) => true,
+            //MoveType::EnPassant => true,
+            MoveType::Checking { allowed: true} => true,
+            MoveType::Checking { allowed: false} => false
         }
     }
 
     fn is_checking(self) -> bool {
-        match self {
-            Self::Checking {..} => true,
-            Self::NonChecking(..) => false
+        match self.move_type {
+            MoveType::Checking {..} => true,
+            MoveType::NonChecking(..) => false
         }
     }
 }
 
 trait BoardOps {
     fn get(&self, pos: &Position) -> Option<&Piece>;
+
+    fn get_mut(&mut self, pos: &Position) -> Option<&mut Piece>;
     fn remove(&mut self, pos: &Position) -> Option<Piece>;
     fn insert(&mut self, pos: Position, piece: Piece) -> Option<Piece>;
     fn move_to(&mut self, before: Position, after: Position) -> Option<Piece>;
@@ -249,6 +287,10 @@ struct Board {
 impl BoardOps for Board {
     fn get(&self, pos: &Position) -> Option<&Piece> {
         self.arr[pos.x as usize][pos.y as usize].as_ref()
+    }
+
+    fn get_mut(&mut self, pos: &Position) -> Option<&mut Piece> {
+        self.arr[pos.x as usize][pos.y as usize].as_mut()
     }
 
     fn remove(&mut self, pos: &Position) -> Option<Piece> {
@@ -277,11 +319,29 @@ impl<'a> IntoIterator for &'a Board {
             .as_slice()
             .iter()
             .flatten()
-            //.filter(|x| x.is_some())
-            //.map(|x| x.as_ref().unwrap())
             .filter_map(|x| x.as_ref())
             .collect::<Vec<Self::Item>>()
             .into_iter()
+    }
+}
+
+
+impl Display for Board {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let letters = "ABCDEFGH";
+        write!(f, "     1     2     3     4     5     6     7     8   \n")?;
+        for (x_index, column) in self.arr.iter().enumerate() {
+            write!(f, "  {:-<49}\n", "")?;
+            write!(f, "{} ", letters.chars().nth(x_index).expect("Index must be maximum 7"))?;
+            for piece in column.iter() {
+                write!(f, "|{}", match piece {
+                    None => format!("     "),
+                    Some(res) => format!("  {}  ", res)
+                })?
+            }
+            write!(f, "|\n")?;
+        };
+        Ok(())
     }
 }
 
@@ -339,16 +399,18 @@ impl Game {
         self.previous_move = None;
     }
 
+    // todo if get_allowed empty lost (and implement max 3x repetition)
     pub fn get_allowed(&self, color: Color) -> HashSet<Move> {
         let mut allowed: HashSet<Move> = HashSet::with_capacity(32);
         for piece in self.pieces.into_iter()
             .filter(|x| x.color == color) {
             for possible_move in self.find_possible_moves(piece).into_iter()
-                .filter(|x| x.move_type.is_available())
+                .filter(|x| x.is_available())
             {
                 let mut game_clone = self.clone();
                 game_clone.make_move_unchecked(&possible_move);
-                let king = game_clone.pieces.into_iter().find(
+                let king = game_clone.pieces.into_iter()
+                    .find(
                     |&x| matches!(x, Piece { color: col, piece_type: PieceType::King { moved: _ }, ..} if *col == color)
                 ).unwrap();
                 if ! game_clone.get_checked(king.color).contains(&king.position) {
@@ -359,20 +421,20 @@ impl Game {
         allowed
     }
 
-    // todo ask player about which piece to promote to when relevant
     pub fn try_move(&mut self, before: Position, after: Position, player_color: Color) -> Result<Move, IllegalMoveError> {
         let piece = self.pieces.get(&before).ok_or(IllegalMoveError)?;
         if piece.color != player_color { return Err(IllegalMoveError) }
 
         match self.find_possible_moves(piece)
             .into_iter()
-            .filter(|x| x.move_type.is_available())
+            .filter(|x| x.is_available())
             .find(|x| x.pos == (before, after))
         {
             Some(possible_move) => {
                 let mut game_clone = self.clone();
                 game_clone.make_move_unchecked(&possible_move);
-                let king = game_clone.pieces.into_iter().find(
+                let king = game_clone.pieces.into_iter()
+                    .find(
                     |&x| matches!(x, Piece { color: col, piece_type: PieceType::King { moved: _ }, ..} if *col == piece.color)
                 ).unwrap();
                 if game_clone.get_checked(king.color).contains(&king.position) { return Err(IllegalMoveError) }
@@ -427,15 +489,19 @@ impl Game {
                         l_rook.be_moved(l_rook_new_pos);
                         self.pieces.insert(l_rook_new_pos, l_rook);
                     }
-                    MoveType::NonChecking(NonCheckingMove::Promotion) => {
-                        drop(self.pieces.remove(&piece.position));
-                        todo!();
-                        return
-                    }
+                    MoveType::NonChecking(NonCheckingMove::Promotion) => {}
                 };
                 piece.be_moved(m.pos.1);
                 self.pieces.insert(m.pos.1, piece);
             }
+        }
+    }
+
+    pub fn promote_last(&mut self, new_piece_type: PieceType) {
+        if let Some(Move {move_type: MoveType::NonChecking(NonCheckingMove::Promotion), pos }) = self.previous_move {
+            self.pieces.get_mut(&pos.1).expect("").piece_type = new_piece_type;
+        } else {
+            panic!("Has to follow a promotion move")
         }
     }
 
@@ -444,7 +510,7 @@ impl Game {
         for piece in self.pieces.into_iter() {
             if piece.color.opposite() == color {
                 checked.extend(self.find_legal(piece).iter().filter(
-                    |&x| x.move_type.is_checking()
+                    |&x| x.is_checking()
                 ).map(
                     |&x: &Move| x.pos.1
                 ))
@@ -522,7 +588,7 @@ impl Game {
                 if let Some(single_move) = pos.add(single_vec) {
                     match self.pieces.get(&single_move) {
                         Some(_) => {}
-                        None if single_move.y * (single_move.y - 7) == 0 => {
+                        None if single_move.y == 0 || single_move.y == 7 => {
                             add_move!(legal_moves, *pos, single_move, MoveType::NonChecking(NonCheckingMove::Promotion));
                         }
                         None => {
@@ -621,6 +687,8 @@ impl Game {
         checked.contains(&r_rook)
             || checked.contains(&r_knight)
             || checked.contains(&r_bishop)
+            || checked.contains(&king_pos)
+
         {
             return None
         }
@@ -649,6 +717,7 @@ impl Game {
                 || checked.contains(&l_knight)
                 || checked.contains(&l_bishop)
                 || checked.contains(&queen)
+                || checked.contains(&king_pos)
         {
             return None
         }
@@ -683,6 +752,12 @@ impl Game {
     }
 }
 
+impl Display for Game {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.pieces)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -691,6 +766,7 @@ mod tests {
     fn test() {
         assert!(true)
     }
+
     #[test]
     fn position_from_str() {
         assert_eq!(Position::try_from("A1"), Ok(Position { x: 0, y: 0 }));
@@ -838,5 +914,11 @@ mod tests {
         println!("{}", print_moves(allowed_white));
         assert_eq!(20, allowed_white_count);
         assert_eq!(20, allowed_black_count);
+    }
+
+    #[test]
+    fn display_board() {
+        let game = Game::set_up();
+        println!("{}", game.pieces)
     }
 }
